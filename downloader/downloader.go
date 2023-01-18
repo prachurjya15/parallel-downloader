@@ -14,7 +14,10 @@ import (
 
 var mutex sync.Mutex
 
-func DownloadFile(url string) error {
+func DownloadFile(url string, nGr int64, nChunkSize int) error {
+	if nGr > 50 {
+		return fmt.Errorf("Maximum Allowed Go Routines is 50")
+	}
 	// Send a Http Head Request
 	fileName := "new.parquet"
 	response, err := http.Head(url)
@@ -33,12 +36,20 @@ func DownloadFile(url string) error {
 	// Spin GoRoutines to FETCH and send to a channel
 	// Collect each channel data and write to the newFile
 	var wg sync.WaitGroup
-	nGr := int64(10)
+	var chunk_size int64
+	if nChunkSize > 0 {
+		chunk_size = int64(nChunkSize)
+		nGr = cLen / int64(nChunkSize)
+		if cLen%int64(nChunkSize) != 0 {
+			nGr = nGr + 1
+		}
+	} else {
+		chunk_size = cLen / nGr
+	}
 	wg.Add(int(nGr))
-	chunk_size := cLen / nGr
-	for i := int64(0); i < nGr; i++ {
+	for i := int64(0); i < int64(nGr); i++ {
 		offset := chunk_size * i
-		if i == nGr-1 {
+		if i == int64(nGr-1) {
 			go downloadAndWrite(url, offset, cLen-offset, fileName, &wg)
 		} else {
 			go downloadAndWrite(url, offset, chunk_size, fileName, &wg)
@@ -48,16 +59,12 @@ func DownloadFile(url string) error {
 
 	// Once Done calculate the signature of new file and compare with old and return
 	destMD5, err := calculateMD5(fileName)
-	log.Printf("SRC MD5: %s \n", srcMD5)
-	log.Printf("Dest MD5: %s \n", destMD5)
-	if destMD5 != srcMD5 {
-		log.Fatalf("Mismatch occured exiting")
-	}
 	if err != nil {
-		log.Fatalf("Error in calculating MD5: %s \n", err)
+		return fmt.Errorf("Error in calculating MD5: %s \n", err)
 	}
-
-	log.Printf("%#v \n", srcMD5)
+	if destMD5 != srcMD5 {
+		return fmt.Errorf("Mismatch occured in checksum. \n src MD5: %s \n dest MD5: %s \n", srcMD5, destMD5)
+	}
 	return nil
 }
 
@@ -81,7 +88,6 @@ func downloadAndWrite(url string, offset int64, chunk_size int64, file string, w
 	if err != nil {
 		log.Fatalf("%#v \n", err)
 	}
-	log.Printf("%#v \n", res.Body)
 	err = writeToFile(res.Body, file, offset)
 	if err != nil {
 		log.Fatalf("Erroring writing from go routine. \n %s \n", err)
